@@ -4,8 +4,6 @@ pipeline {
 
   environment {
     DOCKER_IMG = "itaysass/flask-redis-hello"
-    GIT_SHA7   = "${env.GIT_COMMIT?.take(7) ?: 'localdev'}"
-    DOCKER_TAG = "${GIT_SHA7}"
     CHART_DIR  = "helm/itaysass-flask"
     CHART_VER  = "0.1.0"
     RELEASE    = "demo"
@@ -21,11 +19,22 @@ pipeline {
       }
     }
 
+    stage('Compute tag') {
+      steps {
+        script {
+          def sha = powershell(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+          env.DOCKER_TAG = sha ?: env.BUILD_NUMBER
+          echo "Using DOCKER_TAG=${env.DOCKER_TAG}"
+        }
+      }
+    }
+
     stage('Docker login / build / push') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           powershell '''
-            docker login -u "$env:DH_USER" -p "$env:DH_PASS"
+            $pass = "$env:DH_PASS"
+            $pass | docker login -u "$env:DH_USER" --password-stdin
             docker build -f docker/Dockerfile -t ${env.DOCKER_IMG}:${env.DOCKER_TAG} .
             docker tag ${env.DOCKER_IMG}:${env.DOCKER_TAG} ${env.DOCKER_IMG}:latest
             docker push ${env.DOCKER_IMG}:${env.DOCKER_TAG}
@@ -83,7 +92,6 @@ pipeline {
           Write-Host "kubectl summary failed (non-fatal): $($_.Exception.Message)"
         }
 
-        # Ensure the post step never fails the build
         exit 0
       '''
     }
