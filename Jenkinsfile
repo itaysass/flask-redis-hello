@@ -7,7 +7,7 @@ pipeline {
     CHART_DIR  = "helm/itaysass-flask"
     CHART_VER  = "0.1.0"
     RELEASE    = "demo"
-    CHARTMUSEUM_URL = "http://127.0.0.1:52698"  // <-- set to your actual URL
+    CHARTMUSEUM_URL = "http://127.0.0.1:53618"  // <-- set to your actual URL
     KUBECONFIG = "${env.USERPROFILE}\\.kube\\config"
   }
 
@@ -62,32 +62,44 @@ pipeline {
       }
     }
 
-    stage('Publish chart to ChartMuseum (HTTP)') {
-      steps {
-        powershell '''
-          $file = "itaysass-flask-" + ${env:CHART_VER} + ".tgz"
-          if (-not (Test-Path $file)) {
-            $file = (Get-ChildItem itaysass-flask-*.tgz | Sort-Object LastWriteTime | Select-Object -Last 1).Name
-          }
-          Write-Host "Uploading chart: $file to ${env:CHARTMUSEUM_URL}"
-          & curl.exe -L -X POST --data-binary "@$file" "${env:CHARTMUSEUM_URL}/api/charts"
-        '''
+stage('Publish chart to ChartMuseum (HTTP)') {
+  steps {
+    powershell '''
+      $file = "itaysass-flask-" + ${env:CHART_VER} + ".tgz"
+      if (-not (Test-Path $file)) {
+        $file = (Get-ChildItem itaysass-flask-*.tgz | Sort-Object LastWriteTime | Select-Object -Last 1).Name
       }
-    }
+      Write-Host "Uploading chart: $file to ${env:CHARTMUSEUM_URL}"
+      $code = & curl.exe -s -w "%{http_code}" -o curl.out -L -X POST --data-binary "@$file" "${env:CHARTMUSEUM_URL}/api/charts"
+      if ($code -eq "409") {
+        Write-Host "Chart version already exists; continuing."
+      } elseif ($code -ge "400") {
+        Write-Host "Upload failed with HTTP $code"
+        Get-Content curl.out | Write-Host
+        exit 1
+      } else {
+        Write-Host "Upload OK (HTTP $code)"
+      }
+    '''
+  }
+}
 
     stage('Deploy/Upgrade via Helm') {
-      steps {
-        powershell '''
-          helm repo add itay-cm ${env:CHARTMUSEUM_URL} | Out-Null
-          helm repo update
-          Write-Host "Deploying release ${env:RELEASE} with image tag ${env:DOCKER_TAG}"
-          helm upgrade --install ${env:RELEASE} itay-cm/itaysass-flask `
-            --version ${env:CHART_VER} `
-            --set image.tag=${env:DOCKER_TAG}
-          kubectl rollout status deployment/${env:RELEASE}-flask --timeout=120s
-        '''
-      }
-    }
+  steps {
+    powershell '''
+      # Always ensure repo URL matches current CHARTMUSEUM_URL
+      helm repo remove itay-cm 2>$null
+      helm repo add itay-cm ${env:CHARTMUSEUM_URL} | Out-Null
+      helm repo update
+
+      Write-Host "Deploying release ${env:RELEASE} with image tag ${env:DOCKER_TAG}"
+      helm upgrade --install ${env:RELEASE} itay-cm/itaysass-flask `
+        --version ${env:CHART_VER} `
+        --set image.tag=${env:DOCKER_TAG}
+      kubectl rollout status deployment/${env:RELEASE}-flask --timeout=120s
+    '''
+  }
+}
   }
 
   post {
