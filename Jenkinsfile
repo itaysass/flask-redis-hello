@@ -73,7 +73,19 @@ pipeline {
 
   post {
     always {
-      powershell 'kubectl get deploy,svc,hpa,cm,secret -o wide || $true'
+      powershell '''
+        # Don’t fail the build if these commands error
+        $ErrorActionPreference = "Continue"
+
+        try {
+          kubectl get deploy,svc,hpa,cm,secret -o wide 2>&1 | Write-Host
+        } catch {
+          Write-Host "kubectl summary failed (non-fatal): $($_.Exception.Message)"
+        }
+
+        # Ensure the post step never fails the build
+        exit 0
+      '''
     }
   }
 }
