@@ -1,13 +1,15 @@
 image:
   repository: itaysass/flask-redis-hello
-  tag: "1.0"
+  tag: ""                      # leave empty; Jenkins sets --set image.tag=<sha>
   pullPolicy: IfNotPresent
 
 replicaCount: 2
+nameOverride: "flask"
 
 service:
   type: NodePort
   port: 5000
+  targetPort: 5000
   nodePort: 30001
 
 resources:
@@ -21,15 +23,21 @@ env:
 
 secret:
   enabled: true
-  redisPassword: "password"  # demo only; override via --set or values file
+  redisPassword: "password"    # demo only; prefer: --set secret.redisPassword=... at deploy time
 
 hpa:
   enabled: true
   minReplicas: 1
   maxReplicas: 5
-  targetCPUUtilization: 50
+  targetCPUUtilizationPercentage: 50   # <-- use this if your HPA template expects it
 
 containerPort: 5000
+
 probes:
   livenessPath: /health
   readinessPath: /ready
+
+serviceAccount:
+  create: true
+  name: ""                      # leave empty to use release-based name
+  annotations: {}
