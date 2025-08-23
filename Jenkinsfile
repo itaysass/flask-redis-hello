@@ -31,7 +31,7 @@ pipeline {
 
     stage('Docker login / build / push') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
           powershell '''
             $pass = "$env:DH_PASS"
             $pass | docker login -u "$env:DH_USER" --password-stdin
