@@ -1,0 +1,9 @@
+README.md
+*.tgz
+*.zip
+.git/
+k8s/
+docker/
+logs/
+__pycache__/
+*.pyc

@@ -1,0 +1,7 @@
+1) Get the service URL (Minikube):
+   minikube service {{ include "itaysass-flask.fullname" . }} --url
+
+2) Test endpoints:
+   curl $(minikube service {{ include "itaysass-flask.fullname" . }} --url)
+   curl $(minikube service {{ include "itaysass-flask.fullname" . }} --url)/health
+   curl $(minikube service {{ include "itaysass-flask.fullname" . }} --url)/ready

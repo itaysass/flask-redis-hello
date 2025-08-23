@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"  # Map host:container port
+    depends_on:
+      - redis        # Wait for Redis to be available
+
+  redis:
+    image: "redis:alpine"  # Lightweight Redis image
+    volumes:
+      - redis-data:/data   # Persist Redis data
+
+volumes:
+  redis-data:
