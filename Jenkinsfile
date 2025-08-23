@@ -5,7 +5,7 @@ pipeline {
   environment {
     DOCKER_IMG = "itaysass/flask-redis-hello"
     CHART_DIR  = "helm/itaysass-flask"
-    CHART_VER  = "0.1.0"
+    CHART_VER  = "0.1.2"
     RELEASE    = "demo"
     CHARTMUSEUM_URL = "http://127.0.0.1:53618"  // <-- set to your actual URL
     KUBECONFIG = "${env.USERPROFILE}\\.kube\\config"
