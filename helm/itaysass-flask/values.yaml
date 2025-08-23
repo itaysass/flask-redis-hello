@@ -38,6 +38,18 @@ probes:
   readinessPath: /ready
 
 serviceAccount:
+
   create: true
   name: ""                      # leave empty to use release-based name
   annotations: {}
+
+ingress:
+  enabled: false
+  className: ""        # e.g., "nginx" if you install an ingress controller
+  annotations: {}
+  hosts:
+    - host: example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []              # e.g., [{ secretName: my-tls, hosts: [example.local] }]
