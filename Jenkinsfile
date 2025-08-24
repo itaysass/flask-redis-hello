@@ -7,7 +7,7 @@ pipeline {
     CHART_DIR  = "helm/itaysass-flask"
     CHART_VER  = "0.1.2"
     RELEASE    = "demo"
-    CHARTMUSEUM_URL = "http://127.0.0.1:53618"  // <-- set to your actual URL
+    CHARTMUSEUM_URL = "http://127.0.0.1:64706"
     KUBECONFIG = "${env.USERPROFILE}\\.kube\\config"
   }
 
@@ -30,113 +30,78 @@ pipeline {
       }
     }
 
-<<<<<<< HEAD
-stage('Docker login / build / push') {
-  steps {
-    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2', usernameVariable: 'U', passwordVariable: 'P')]) {
-      powershell '''
-        $ErrorActionPreference = "Stop"
-
-        Write-Host "Docker logout (best-effort)…"
-        docker logout *>$null
-
-        # Sanity check we really have values
-        if (-not $env:DH_USER -or -not $env:DH_PASS) {
-          throw "Missing DH_USER/DH_PASS environment variables"
-        }
-
-        Write-Host "Docker login as $env:DH_USER"
-        # PowerShell pipes the string with a newline; Docker accepts it.
-        $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
-
-        Write-Host "Building image $env:DOCKER_IMG:$env:DOCKER_TAG"
-        docker build -f docker/Dockerfile -t "$env:DOCKER_IMG:$env:DOCKER_TAG" .
-
-        docker tag "$env:DOCKER_IMG:$env:DOCKER_TAG" "$env:DOCKER_IMG:latest"
-
-        Write-Host "Pushing $env:DOCKER_IMG:$env:DOCKER_TAG"
-        docker push "$env:DOCKER_IMG:$env:DOCKER_TAG"
-
-        Write-Host "Pushing $env:DOCKER_IMG:latest"
-        docker push "$env:DOCKER_IMG:latest"
-
-        Write-Host "Done."
-      '''
-    }
-  }
-}
-=======
     stage('Docker login / build / push') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2',
+                                          usernameVariable: 'DH_USER',
+                                          passwordVariable: 'DH_PASS')]) {
           powershell '''
+            $ErrorActionPreference = "Stop"
+
+            Write-Host "Docker logout (best-effort)…"
+            docker logout *>$null
+
+            if (-not $env:DH_USER -or -not $env:DH_PASS) {
+              throw "Missing DH_USER/DH_PASS environment variables"
+            }
+
             Write-Host "Docker login as $env:DH_USER"
-            $env:DH_PASS | docker login -u "$env:DH_USER" --password-stdin
+            $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
 
-            Write-Host "Building image ${env:DOCKER_IMG}:${env:DOCKER_TAG}"
-            docker build -f docker/Dockerfile -t ${env:DOCKER_IMG}:${env:DOCKER_TAG} .
+            Write-Host "Building image $env:DOCKER_IMG:$env:DOCKER_TAG"
+            docker build -f docker/Dockerfile -t "$env:DOCKER_IMG:$env:DOCKER_TAG" .
 
-            docker tag ${env:DOCKER_IMG}:${env:DOCKER_TAG} ${env:DOCKER_IMG}:latest
+            docker tag "$env:DOCKER_IMG:$env:DOCKER_TAG" "$env:DOCKER_IMG:latest"
 
-            Write-Host "Pushing ${env:DOCKER_IMG}:${env:DOCKER_TAG}"
-            docker push ${env:DOCKER_IMG}:${env:DOCKER_TAG}
+            Write-Host "Pushing $env:DOCKER_IMG:$env:DOCKER_TAG"
+            docker push "$env:DOCKER_IMG:$env:DOCKER_TAG"
 
-            Write-Host "Pushing ${env:DOCKER_IMG}:latest"
-            docker push ${env:DOCKER_IMG}:latest
+            Write-Host "Pushing $env:DOCKER_IMG:latest"
+            docker push "$env:DOCKER_IMG:latest"
           '''
         }
       }
     }
 
->>>>>>> 29e9eaa7dee7236080d05b8e9bce6f6c74696554
-    stage('Helm lint & package chart') {
+    stage('Publish chart to ChartMuseum (HTTP)') {
       steps {
         powershell '''
-          helm lint ${env:CHART_DIR}
-          helm package ${env:CHART_DIR}
-          dir *.tgz
+          $file = "itaysass-flask-" + $env:CHART_VER + ".tgz"
+          if (-not (Test-Path $file)) {
+            $file = (Get-ChildItem itaysass-flask-*.tgz | Sort-Object LastWriteTime | Select-Object -Last 1).Name
+          }
+          Write-Host "Uploading chart: $file to $env:CHARTMUSEUM_URL"
+          $code = & curl.exe -s -w "%{http_code}" -o curl.out -L -X POST --data-binary "@$file" "$env:CHARTMUSEUM_URL/api/charts"
+          $icode = [int]$code
+          if ($icode -eq 409) {
+            Write-Host "Chart version already exists; continuing."
+          } elseif ($icode -ge 400) {
+            Write-Host "Upload failed with HTTP $icode"
+            Get-Content curl.out | Write-Host
+            exit 1
+          } else {
+            Write-Host "Upload OK (HTTP $icode)"
+          }
         '''
       }
     }
 
-stage('Publish chart to ChartMuseum (HTTP)') {
-  steps {
-    powershell '''
-      $file = "itaysass-flask-" + ${env:CHART_VER} + ".tgz"
-      if (-not (Test-Path $file)) {
-        $file = (Get-ChildItem itaysass-flask-*.tgz | Sort-Object LastWriteTime | Select-Object -Last 1).Name
-      }
-      Write-Host "Uploading chart: $file to ${env:CHARTMUSEUM_URL}"
-      $code = & curl.exe -s -w "%{http_code}" -o curl.out -L -X POST --data-binary "@$file" "${env:CHARTMUSEUM_URL}/api/charts"
-      if ($code -eq "409") {
-        Write-Host "Chart version already exists; continuing."
-      } elseif ($code -ge "400") {
-        Write-Host "Upload failed with HTTP $code"
-        Get-Content curl.out | Write-Host
-        exit 1
-      } else {
-        Write-Host "Upload OK (HTTP $code)"
-      }
-    '''
-  }
-}
-
     stage('Deploy/Upgrade via Helm') {
-  steps {
-    powershell '''
-      # Always ensure repo URL matches current CHARTMUSEUM_URL
-      helm repo remove itay-cm 2>$null
-      helm repo add itay-cm ${env:CHARTMUSEUM_URL} | Out-Null
-      helm repo update
+      steps {
+        powershell '''
+          helm repo remove itay-cm 2>$null
+          helm repo add itay-cm $env:CHARTMUSEUM_URL | Out-Null
+          helm repo update
 
-      Write-Host "Deploying release ${env:RELEASE} with image tag ${env:DOCKER_TAG}"
-      helm upgrade --install ${env:RELEASE} itay-cm/itaysass-flask `
-        --version ${env:CHART_VER} `
-        --set image.tag=${env:DOCKER_TAG}
-      kubectl rollout status deployment/${env:RELEASE}-flask --timeout=120s
-    '''
-  }
-}
+          Write-Host "Deploying release $env:RELEASE with image tag $env:DOCKER_TAG"
+          helm upgrade --install $env:RELEASE itay-cm/itaysass-flask `
+            --version $env:CHART_VER `
+            --set image.tag=$env:DOCKER_TAG
+
+          kubectl rollout status deployment/$env:RELEASE-flask --timeout=120s
+        '''
+      }
+    }
   }
 
   post {
