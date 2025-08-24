@@ -3,15 +3,22 @@ pipeline {
   options { timestamps() }
 
   environment {
+    // App & chart
     DOCKER_IMG       = "itaysass/flask-redis-hello"     // <user>/<repo>
     CHART_DIR        = "helm/itaysass-flask"            // path to chart root
     CHART_VER        = "0.1.2"                          // chart version in Chart.yaml
     RELEASE          = "demo"                           // Helm release name
+
+    // Infra
     CHARTMUSEUM_URL  = "http://127.0.0.1:64706"         // ChartMuseum base URL
     KUBECONFIG       = "${env.USERPROFILE}\\.kube\\config"
+
+    // Docker Hub creds (creates DOCKER_CREDS_USR / DOCKER_CREDS_PSW)
+    DOCKER_CREDS     = credentials('dockerhub-creds-2')
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         checkout scm
@@ -30,40 +37,31 @@ pipeline {
       }
     }
 
-    stage('Docker login / build / push') {
+    stage('Docker login / build / push (latest only)') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2',
-                                          usernameVariable: 'DH_USER',
-                                          passwordVariable: 'DH_PASS')]) {
-          powershell '''
-            $ErrorActionPreference = "Stop"
+        powershell '''
+          $ErrorActionPreference = "Stop"
 
-            # Guards
-            if ($env:DOCKER_IMG -notmatch '^[^/]+/[^/]+$') { throw "DOCKER_IMG must be <user>/<repo>" }
-            if (-not $env:DH_USER -or -not $env:DH_PASS) { throw "Missing DH_USER/DH_PASS" }
-            if (-not $env:DOCKER_TAG) { throw "Missing DOCKER_TAG" }
+          $user = $env:DOCKER_CREDS_USR
+          $pass = $env:DOCKER_CREDS_PSW
+          if (-not $user -or -not $pass) { throw "Credential envs missing" }
 
-            Write-Host "Docker logout (best-effort)…"
-            docker logout *>$null
+          if ($env:DOCKER_IMG -notmatch '^[^/]+/[^/]+$') { throw "DOCKER_IMG must be <user>/<repo> (got: '$($env:DOCKER_IMG)')" }
+          $full = "$($env:DOCKER_IMG):latest"
 
-            Write-Host "Docker login as $env:DH_USER"
-		    Write-Host "$env:DH_PASS | docker login -u $env:DH_USER --password-stdin"
-            $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
-            if ($LASTEXITCODE -ne 0) { throw "Docker login failed" }
+          Write-Host "Docker logout (best-effort)…"
+          docker logout *>$null
 
-            Write-Host "Building image $env:DOCKER_IMG:$env:DOCKER_TAG"
-            docker build -f docker/Dockerfile -t "$env:DOCKER_IMG:$env:DOCKER_TAG" .
+          Write-Host "Docker login as $user"
+          $pass | docker login -u $user --password-stdin
+          if ($LASTEXITCODE -ne 0) { throw "Docker login failed" }
 
-            Write-Host "Tagging also as latest"
-            docker tag "$env:DOCKER_IMG:$env:DOCKER_TAG" "$env:DOCKER_IMG:latest"
+          Write-Host "Building $full"
+          docker build -f docker/Dockerfile -t "$full" .
 
-            Write-Host "Pushing $env:DOCKER_IMG:$env:DOCKER_TAG"
-            docker push "$env:DOCKER_IMG:$env:DOCKER_TAG"
-
-            Write-Host "Pushing $env:DOCKER_IMG:latest"
-            docker push "$env:DOCKER_IMG:latest"
-          '''
-        }
+          Write-Host "Pushing $full"
+          docker push "$full"
+        '''
       }
     }
 
@@ -118,14 +116,23 @@ pipeline {
         powershell '''
           $ErrorActionPreference = "Stop"
 
+          # If you previously hit NodePort collisions, either:
+          # 1) change your chart to make service.nodePort optional, and/or
+          # 2) override below to avoid fixed 30001.
+          # Example override (uncomment if your chart supports it):
+          # $extra = "--set service.type=NodePort --set service.nodePort=30080"
+          $extra = ""
+
           helm repo remove itay-cm 2>$null
           helm repo add itay-cm $env:CHARTMUSEUM_URL | Out-Null
           helm repo update
 
-          Write-Host "Deploying release $env:RELEASE with image tag $env:DOCKER_TAG"
+          Write-Host "Deploying release $env:RELEASE with image repo $env:DOCKER_IMG tag latest"
           helm upgrade --install $env:RELEASE itay-cm/itaysass-flask `
             --version $env:CHART_VER `
-            --set image.tag=$env:DOCKER_TAG
+            --set image.repository=$env:DOCKER_IMG `
+            --set image.tag=latest `
+            $extra
 
           kubectl rollout status deployment/$env:RELEASE-flask --timeout=120s
         '''
