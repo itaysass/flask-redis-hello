@@ -47,6 +47,7 @@ pipeline {
             docker logout *>$null
 
             Write-Host "Docker login as $env:DH_USER"
+		    Write-Host "$env:DH_PASS | docker login -u $env:DH_USER --password-stdin"
             $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
             if ($LASTEXITCODE -ne 0) { throw "Docker login failed" }
 
