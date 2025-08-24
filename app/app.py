@@ -13,6 +13,7 @@ logging.basicConfig(filename='logs/app.log', level=logging.INFO)
 @app.route('/')
 def index():
     logging.info("Homepage was accessed.")
+    logging.info("About to return String back with deafult name")
     return "Hello, World! By Itay"
 
 # Liveness probe

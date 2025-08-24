@@ -30,6 +30,7 @@ pipeline {
       }
     }
 
+
 stage('Docker login / build / push') {
   steps {
     withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2',
@@ -66,6 +67,7 @@ stage('Docker login / build / push') {
     }
   }
 }
+
     stage('Helm lint & package chart') {
       steps {
         powershell '''
