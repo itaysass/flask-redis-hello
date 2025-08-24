@@ -30,27 +30,43 @@ pipeline {
       }
     }
 
-    stage('Docker login / build / push') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-          powershell '''
-            Write-Host "Docker login as $env:DH_USER"
-            $env:DH_PASS | docker login -u "$env:DH_USER" --password-stdin
 
-            Write-Host "Building image ${env:DOCKER_IMG}:${env:DOCKER_TAG}"
-            docker build -f docker/Dockerfile -t ${env:DOCKER_IMG}:${env:DOCKER_TAG} .
+stage('Docker login / build / push') {
+  steps {
+    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2',
+                                      usernameVariable: 'DH_USER',
+                                      passwordVariable: 'DH_PASS')]) {
+      powershell '''
+        $ErrorActionPreference = "Stop"
 
-            docker tag ${env:DOCKER_IMG}:${env:DOCKER_TAG} ${env:DOCKER_IMG}:latest
+        Write-Host "Docker logout (best-effort)…"
+        docker logout *>$null
 
-            Write-Host "Pushing ${env:DOCKER_IMG}:${env:DOCKER_TAG}"
-            docker push ${env:DOCKER_IMG}:${env:DOCKER_TAG}
-
-            Write-Host "Pushing ${env:DOCKER_IMG}:latest"
-            docker push ${env:DOCKER_IMG}:latest
-          '''
+        # Sanity check we really have values
+        if (-not $env:DH_USER -or -not $env:DH_PASS) {
+          throw "Missing DH_USER/DH_PASS environment variables"
         }
-      }
+
+        Write-Host "Docker login as $env:DH_USER"
+        # PowerShell pipes the string with a newline; Docker accepts it.
+        $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
+
+        Write-Host "Building image $env:DOCKER_IMG:$env:DOCKER_TAG"
+        docker build -f docker/Dockerfile -t "$env:DOCKER_IMG:$env:DOCKER_TAG" .
+
+        docker tag "$env:DOCKER_IMG:$env:DOCKER_TAG" "$env:DOCKER_IMG:latest"
+
+        Write-Host "Pushing $env:DOCKER_IMG:$env:DOCKER_TAG"
+        docker push "$env:DOCKER_IMG:$env:DOCKER_TAG"
+
+        Write-Host "Pushing $env:DOCKER_IMG:latest"
+        docker push "$env:DOCKER_IMG:latest"
+
+        Write-Host "Done."
+      '''
     }
+  }
+}
 
     stage('Helm lint & package chart') {
       steps {
