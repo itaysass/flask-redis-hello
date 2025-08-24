@@ -3,12 +3,12 @@ pipeline {
   options { timestamps() }
 
   environment {
-    DOCKER_IMG = "itaysass/flask-redis-hello"
-    CHART_DIR  = "helm/itaysass-flask"
-    CHART_VER  = "0.1.2"
-    RELEASE    = "demo"
-    CHARTMUSEUM_URL = "http://127.0.0.1:64706"
-    KUBECONFIG = "${env.USERPROFILE}\\.kube\\config"
+    DOCKER_IMG       = "itaysass/flask-redis-hello"     // <user>/<repo>
+    CHART_DIR        = "helm/itaysass-flask"            // path to chart root
+    CHART_VER        = "0.1.2"                          // chart version in Chart.yaml
+    RELEASE          = "demo"                           // Helm release name
+    CHARTMUSEUM_URL  = "http://127.0.0.1:64706"         // ChartMuseum base URL
+    KUBECONFIG       = "${env.USERPROFILE}\\.kube\\config"
   }
 
   stages {
@@ -38,19 +38,22 @@ pipeline {
           powershell '''
             $ErrorActionPreference = "Stop"
 
+            # Guards
+            if ($env:DOCKER_IMG -notmatch '^[^/]+/[^/]+$') { throw "DOCKER_IMG must be <user>/<repo>" }
+            if (-not $env:DH_USER -or -not $env:DH_PASS) { throw "Missing DH_USER/DH_PASS" }
+            if (-not $env:DOCKER_TAG) { throw "Missing DOCKER_TAG" }
+
             Write-Host "Docker logout (best-effort)…"
             docker logout *>$null
 
-            if (-not $env:DH_USER -or -not $env:DH_PASS) {
-              throw "Missing DH_USER/DH_PASS environment variables"
-            }
-
             Write-Host "Docker login as $env:DH_USER"
             $env:DH_PASS | docker login -u $env:DH_USER --password-stdin
+            if ($LASTEXITCODE -ne 0) { throw "Docker login failed" }
 
             Write-Host "Building image $env:DOCKER_IMG:$env:DOCKER_TAG"
             docker build -f docker/Dockerfile -t "$env:DOCKER_IMG:$env:DOCKER_TAG" .
 
+            Write-Host "Tagging also as latest"
             docker tag "$env:DOCKER_IMG:$env:DOCKER_TAG" "$env:DOCKER_IMG:latest"
 
             Write-Host "Pushing $env:DOCKER_IMG:$env:DOCKER_TAG"
@@ -63,16 +66,39 @@ pipeline {
       }
     }
 
+    stage('Package Helm chart') {
+      steps {
+        powershell '''
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path $env:CHART_DIR)) { throw "Chart dir not found: $env:CHART_DIR" }
+
+          Write-Host "Lint chart at $env:CHART_DIR"
+          helm lint $env:CHART_DIR
+
+          Write-Host "Package chart version $env:CHART_VER with appVersion $env:DOCKER_TAG"
+          helm package $env:CHART_DIR `
+            --version $env:CHART_VER `
+            --app-version $env:DOCKER_TAG `
+            --destination .
+        '''
+      }
+    }
+
     stage('Publish chart to ChartMuseum (HTTP)') {
       steps {
         powershell '''
+          $ErrorActionPreference = "Stop"
           $file = "itaysass-flask-" + $env:CHART_VER + ".tgz"
           if (-not (Test-Path $file)) {
-            $file = (Get-ChildItem itaysass-flask-*.tgz | Sort-Object LastWriteTime | Select-Object -Last 1).Name
+            $pkg = Get-ChildItem itaysass-flask-*.tgz | Sort-Object LastWriteTime | Select-Object -Last 1
+            if (-not $pkg) { throw "Chart package (*.tgz) not found" }
+            $file = $pkg.Name
           }
+
           Write-Host "Uploading chart: $file to $env:CHARTMUSEUM_URL"
           $code = & curl.exe -s -w "%{http_code}" -o curl.out -L -X POST --data-binary "@$file" "$env:CHARTMUSEUM_URL/api/charts"
           $icode = [int]$code
+
           if ($icode -eq 409) {
             Write-Host "Chart version already exists; continuing."
           } elseif ($icode -ge 400) {
@@ -89,6 +115,8 @@ pipeline {
     stage('Deploy/Upgrade via Helm') {
       steps {
         powershell '''
+          $ErrorActionPreference = "Stop"
+
           helm repo remove itay-cm 2>$null
           helm repo add itay-cm $env:CHARTMUSEUM_URL | Out-Null
           helm repo update
