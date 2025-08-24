@@ -34,7 +34,7 @@ pipeline {
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2',
                                           usernameVariable: 'DH_USER',
-                                          passwordVariable: 'dckr_pat_FqagcT3aFMC-CJ67ubZS8n07tRM')]) {
+                                          passwordVariable: 'DH_PASS')]) {
           powershell '''
             $ErrorActionPreference = "Stop"
 
