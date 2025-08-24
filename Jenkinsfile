@@ -33,7 +33,9 @@ pipeline {
 <<<<<<< HEAD
 stage('Docker login / build / push') {
   steps {
- withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2', usernameVariable: 'U', passwordVariable: 'P')]) {
+    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2',
+                                      usernameVariable: 'DH_USER',
+                                      passwordVariable: 'DH_PASS')]) {
       powershell '''
         $ErrorActionPreference = "Stop"
 
