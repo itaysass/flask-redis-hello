@@ -30,11 +30,10 @@ pipeline {
       }
     }
 
+<<<<<<< HEAD
 stage('Docker login / build / push') {
   steps {
-    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2',
-                                      usernameVariable: 'DH_USER',
-                                      passwordVariable: 'DH_PASS')]) {
+ withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2', usernameVariable: 'U', passwordVariable: 'P')]) {
       powershell '''
         $ErrorActionPreference = "Stop"
 
@@ -66,6 +65,30 @@ stage('Docker login / build / push') {
     }
   }
 }
+=======
+    stage('Docker login / build / push') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds-2', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          powershell '''
+            Write-Host "Docker login as $env:DH_USER"
+            $env:DH_PASS | docker login -u "$env:DH_USER" --password-stdin
+
+            Write-Host "Building image ${env:DOCKER_IMG}:${env:DOCKER_TAG}"
+            docker build -f docker/Dockerfile -t ${env:DOCKER_IMG}:${env:DOCKER_TAG} .
+
+            docker tag ${env:DOCKER_IMG}:${env:DOCKER_TAG} ${env:DOCKER_IMG}:latest
+
+            Write-Host "Pushing ${env:DOCKER_IMG}:${env:DOCKER_TAG}"
+            docker push ${env:DOCKER_IMG}:${env:DOCKER_TAG}
+
+            Write-Host "Pushing ${env:DOCKER_IMG}:latest"
+            docker push ${env:DOCKER_IMG}:latest
+          '''
+        }
+      }
+    }
+
+>>>>>>> 29e9eaa7dee7236080d05b8e9bce6f6c74696554
     stage('Helm lint & package chart') {
       steps {
         powershell '''
