@@ -1,24 +1,23 @@
 pipeline {
   agent any
-  options { timestamps() }
+  options {
+    timestamps()
+  }
+
+  parameters {
+    booleanParam(name: 'PRELOAD_TO_MINIKUBE', defaultValue: false,
+      description: 'If true, preload the built image into Minikube (no registry pull); otherwise pull from Docker Hub.')
+  }
 
   environment {
-    // App & chart
-    DOCKER_IMG       = "itaysass/flask-redis-hello"     // <user>/<repo>
-    CHART_DIR        = "helm/itaysass-flask"            // path to chart root
-    CHART_VER        = "0.1.2"                          // chart version in Chart.yaml
-    RELEASE          = "demo"                           // Helm release name
-
-    // Infra
-    CHARTMUSEUM_URL  = "http://127.0.0.1:64706"         // ChartMuseum base URL
-    KUBECONFIG       = "${env.USERPROFILE}\\.kube\\config"
-
-    // Docker Hub creds (creates DOCKER_CREDS_USR / DOCKER_CREDS_PSW)
-    DOCKER_CREDS     = credentials('dockerhub-creds-2')
+    DOCKER_IMG  = "itaysass/flask-redis-hello"   // <user>/<repo>
+    CHART_DIR   = "helm/itaysass-flask"          // path to chart root
+    CHART_VER   = "0.1.2"                        // chart version in Chart.yaml
+    RELEASE     = "demo"                         // Helm release name
+    // CHARTMUSEUM_URL is discovered dynamically at runtime
   }
 
   stages {
-
     stage('Checkout') {
       steps {
         checkout scm
@@ -37,35 +36,120 @@ pipeline {
       }
     }
 
-    stage('Docker login / build / push (latest only)') {
+    stage('Ensure Minikube up & context') {
       steps {
         powershell '''
           $ErrorActionPreference = "Stop"
 
-          $user = $env:DOCKER_CREDS_USR
-          $pass = $env:DOCKER_CREDS_PSW
-          if (-not $user -or -not $pass) { throw "Credential envs missing" }
+          # Start if needed
+          $status = (minikube status --output json) 2>$null
+          if (!$status -or ($status -notmatch '"Host":\\s*"Running"')) {
+            Write-Host "Starting Minikube (docker driver)…"
+            minikube start --driver=docker --memory=4096 --cpus=2
+          } else {
+            Write-Host "Minikube already running."
+          }
 
-          if ($env:DOCKER_IMG -notmatch '^[^/]+/[^/]+$') { throw "DOCKER_IMG must be <user>/<repo> (got: '$($env:DOCKER_IMG)')" }
-          $full = "$($env:DOCKER_IMG):latest"
-
-          Write-Host "Docker logout (best-effort)…"
-          docker logout *>$null
-
-          Write-Host "Docker login as $user"
-          $pass | docker login -u $user --password-stdin
-          if ($LASTEXITCODE -ne 0) { throw "Docker login failed" }
-
-          Write-Host "Building $full"
-          docker build -f docker/Dockerfile -t "$full" .
-
-          Write-Host "Pushing $full"
-          docker push "$full"
+          # Point kubectl at Minikube
+          $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
+          minikube update-context | Out-Null
+          kubectl cluster-info
+          kubectl get nodes -o wide
         '''
       }
     }
 
-    stage('Package Helm chart') {
+    stage('Discover ChartMuseum URL') {
+      steps {
+        script {
+          def url = powershell(returnStdout: true, script: '''
+            $ErrorActionPreference = "Stop"
+            $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
+            $ns  = "chartmuseum"
+            $svc = "cm-chartmuseum"
+
+            for ($i=0; $i -lt 30; $i++) {
+              try {
+                $out = & minikube service -n $ns $svc --url 2>$null
+                if ($LASTEXITCODE -eq 0 -and $out) {
+                  $u = ($out -split "\\r?\\n" | Where-Object { $_ -match '^https?://' })[0]
+                  if ($u) { $u.Trim(); exit 0 }
+                }
+              } catch { }
+              Start-Sleep -Seconds 2
+            }
+
+            throw "Failed to resolve ChartMuseum URL via 'minikube service -n $ns $svc --url'"
+          ''').trim()
+          if (!url) { error 'ChartMuseum URL not found' }
+          env.CHARTMUSEUM_URL = url
+          echo "CHARTMUSEUM_URL=${env.CHARTMUSEUM_URL}"
+        }
+      }
+    }
+
+    stage('Docker login / build / push') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'DockerHubPass',
+                                          usernameVariable: 'DH_USER',
+                                          passwordVariable: 'DH_PASS')]) {
+          retry(2) {
+            powershell '''
+              $ErrorActionPreference = "Stop"
+
+              if ($env:DOCKER_IMG -notmatch '^[^/]+/[^/]+$') { throw "DOCKER_IMG must be <user>/<repo>" }
+              if (-not $env:DH_USER -or -not $env:DH_PASS) { throw "Missing DH_USER/DH_PASS" }
+              if (-not $env:DOCKER_TAG) { throw "Missing DOCKER_TAG" }
+
+              Write-Host "Docker logout (best-effort)…"
+              docker logout *>$null
+
+              # Write password/token with NO trailing newline, then feed it to docker
+              $pwdFile = [System.IO.Path]::GetTempFileName()
+              Set-Content -Path $pwdFile -Value $env:DH_PASS -NoNewline -Encoding ASCII
+
+              try {
+                Write-Host "Docker login as $env:DH_USER"
+                docker login -u "$env:DH_USER" --password-stdin < $pwdFile
+                if ($LASTEXITCODE -ne 0) { throw "Docker login failed" }
+              } finally {
+                Remove-Item -Path $pwdFile -Force -ErrorAction SilentlyContinue
+              }
+
+              Write-Host "Building image $env:DOCKER_IMG:$env:DOCKER_TAG"
+              docker build -f docker/Dockerfile -t "$env:DOCKER_IMG:$env:DOCKER_TAG" .
+
+              Write-Host "Tagging also as latest"
+              docker tag "$env:DOCKER_IMG:$env:DOCKER_TAG" "$env:DOCKER_IMG:latest"
+
+              Write-Host "Pushing $env:DOCKER_IMG:$env:DOCKER_TAG"
+              docker push "$env:DOCKER_IMG:$env:DOCKER_TAG"
+
+              Write-Host "Pushing $env:DOCKER_IMG:latest"
+              docker push "$env:DOCKER_IMG:latest"
+            '''
+          }
+        }
+      }
+    }
+
+    stage('(Optional) Preload image into Minikube') {
+      when { expression { return params.PRELOAD_TO_MINIKUBE } }
+      steps {
+        powershell '''
+          $ErrorActionPreference = "Stop"
+          if (-not $env:DOCKER_TAG) { throw "Missing DOCKER_TAG" }
+
+          $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
+          $img = "itaysass/flask-redis-hello:$env:DOCKER_TAG"
+          Write-Host "Preloading $img into Minikube…"
+          minikube image load $img
+          minikube image ls | Select-String $img | Out-Host
+        '''
+      }
+    }
+
+    stage('Lint & Package Helm chart') {
       steps {
         powershell '''
           $ErrorActionPreference = "Stop"
@@ -75,15 +159,12 @@ pipeline {
           helm lint $env:CHART_DIR
 
           Write-Host "Package chart version $env:CHART_VER with appVersion $env:DOCKER_TAG"
-          helm package $env:CHART_DIR `
-            --version $env:CHART_VER `
-            --app-version $env:DOCKER_TAG `
-            --destination .
+          helm package $env:CHART_DIR --version $env:CHART_VER --app-version $env:DOCKER_TAG --destination .
         '''
       }
     }
 
-    stage('Publish chart to ChartMuseum (HTTP)') {
+    stage('Publish chart to ChartMuseum') {
       steps {
         powershell '''
           $ErrorActionPreference = "Stop"
@@ -95,17 +176,16 @@ pipeline {
           }
 
           Write-Host "Uploading chart: $file to $env:CHARTMUSEUM_URL"
-          $code = & curl.exe -s -w "%{http_code}" -o curl.out -L -X POST --data-binary "@$file" "$env:CHARTMUSEUM_URL/api/charts"
-          $icode = [int]$code
-
-          if ($icode -eq 409) {
-            Write-Host "Chart version already exists; continuing."
-          } elseif ($icode -ge 400) {
-            Write-Host "Upload failed with HTTP $icode"
-            Get-Content curl.out | Write-Host
-            exit 1
-          } else {
-            Write-Host "Upload OK (HTTP $icode)"
+          try {
+            Invoke-WebRequest -Uri "$env:CHARTMUSEUM_URL/api/charts" -Method Post -InFile $file -ContentType "application/gzip" -UseBasicParsing | Out-Null
+            Write-Host "Upload OK"
+          } catch {
+            $status = $_.Exception.Response.StatusCode.value__
+            if ($status -eq 409) {
+              Write-Host "Chart version already exists; continuing."
+            } else {
+              throw "Upload failed (HTTP $status): $($_.Exception.Message)"
+            }
           }
         '''
       }
@@ -113,29 +193,33 @@ pipeline {
 
     stage('Deploy/Upgrade via Helm') {
       steps {
-        powershell '''
-          $ErrorActionPreference = "Stop"
+        script {
+          def pullPolicy = params.PRELOAD_TO_MINIKUBE ? 'IfNotPresent' : 'Always'
+          withEnv([
+            "KUBECONFIG=${env.USERPROFILE}\\.kube\\config",
+            "PULL_POLICY=${pullPolicy}"
+          ]) {
+            retry(2) {
+              powershell '''
+                $ErrorActionPreference = "Stop"
 
-          # If you previously hit NodePort collisions, either:
-          # 1) change your chart to make service.nodePort optional, and/or
-          # 2) override below to avoid fixed 30001.
-          # Example override (uncomment if your chart supports it):
-          # $extra = "--set service.type=NodePort --set service.nodePort=30080"
-          $extra = ""
+                # Point a Helm repo at the discovered ChartMuseum URL
+                helm repo remove itay-cm 2>$null
+                helm repo add itay-cm $env:CHARTMUSEUM_URL | Out-Null
+                helm repo update
 
-          helm repo remove itay-cm 2>$null
-          helm repo add itay-cm $env:CHARTMUSEUM_URL | Out-Null
-          helm repo update
+                Write-Host "Deploying release $env:RELEASE with image tag $env:DOCKER_TAG (pullPolicy=$env:PULL_POLICY)"
+                helm upgrade --install $env:RELEASE itay-cm/itaysass-flask `
+                  --version $env:CHART_VER `
+                  --set image.repository=$env:DOCKER_IMG `
+                  --set image.tag=$env:DOCKER_TAG `
+                  --set image.pullPolicy=$env:PULL_POLICY
 
-          Write-Host "Deploying release $env:RELEASE with image repo $env:DOCKER_IMG tag latest"
-          helm upgrade --install $env:RELEASE itay-cm/itaysass-flask `
-            --version $env:CHART_VER `
-            --set image.repository=$env:DOCKER_IMG `
-            --set image.tag=latest `
-            $extra
-
-          kubectl rollout status deployment/$env:RELEASE-flask --timeout=120s
-        '''
+                kubectl rollout status deployment/$env:RELEASE-flask --timeout=180s
+              '''
+            }
+          }
+        }
       }
     }
   }
@@ -144,12 +228,19 @@ pipeline {
     always {
       powershell '''
         $ErrorActionPreference = "Continue"
-        try {
-          kubectl get deploy,svc,hpa,cm,secret -o wide 2>&1 | Write-Host
-        } catch {
-          Write-Host "kubectl summary failed (non-fatal): $($_.Exception.Message)"
-        }
-        exit 0
+        $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
+
+        Write-Host "`n=== Objects Summary ==="
+        kubectl get deploy,rs,pod,svc,hpa,cm,secret -o wide 2>&1 | Write-Host
+
+        Write-Host "`n=== Events (recent) ==="
+        kubectl get events --sort-by=.lastTimestamp | Select-Object -Last 50 | Out-String | Write-Host
+
+        Write-Host "`n=== Describe Deployment (demo-flask assumed) ==="
+        kubectl describe deploy demo-flask 2>$null | Out-String | Write-Host
+
+        Write-Host "`n=== Logs (deployment) ==="
+        kubectl logs deploy/demo-flask --all-containers --tail=200 2>$null | Out-String | Write-Host
       '''
     }
   }
