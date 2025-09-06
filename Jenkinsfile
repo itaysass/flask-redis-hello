@@ -252,24 +252,38 @@ stage('Discover ChartMuseum URL') {
     }
   }
 
-  post {
-    always {
-      powershell '''
-        $ErrorActionPreference = "Continue"
-        $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
+post {
+  always {
+    powershell '''
+      $ErrorActionPreference = "Continue"
+      $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
 
-        Write-Host "`n=== Objects Summary ==="
-        kubectl get deploy,rs,pod,svc,hpa,cm,secret -o wide 2>&1 | Write-Host
+      function Invoke-NonFatal {
+        param([string]$Cmd)
+        Write-Host "`n>>> $Cmd"
+        try {
+          # Run the command via PowerShell (lets us pipe to Write-Host safely)
+          $out = Invoke-Expression $Cmd
+          if ($out -is [System.Array]) { $out = $out -join [Environment]::NewLine }
+          if ($out) { Write-Host $out }
+        } catch {
+          Write-Host "non-fatal: $($_.Exception.Message)"
+        } finally {
+          # Make sure a native tool's non-zero exit code doesn't bubble up
+          $global:LASTEXITCODE = 0
+        }
+      }
 
-        Write-Host "`n=== Events (recent) ==="
-        kubectl get events --sort-by=.lastTimestamp | Select-Object -Last 50 | Out-String | Write-Host
+      Invoke-NonFatal 'kubectl get deploy,rs,pod,svc,hpa,cm,secret -o wide 2>&1'
+      Invoke-NonFatal 'kubectl get events --sort-by=.lastTimestamp | Select-Object -Last 50 | Out-String'
+      Invoke-NonFatal "kubectl describe deploy $env:RELEASE-flask 2>&1 | Out-String"
+      Invoke-NonFatal "kubectl logs deploy/$env:RELEASE-flask --all-containers --tail=200 2>&1 | Out-String"
 
-        Write-Host "`n=== Describe Deployment ==="
-        kubectl describe deploy $env:RELEASE-flask 2>$null | Out-String | Write-Host
-
-        Write-Host "`n=== Logs (deployment) ==="
-        kubectl logs deploy/$env:RELEASE-flask --all-containers --tail=200 2>$null | Out-String | Write-Host
-      '''
-    }
+      # Belt & suspenders: ensure PowerShell step returns success
+      $global:LASTEXITCODE = 0
+      exit 0
+    '''
   }
+}
+
 }
