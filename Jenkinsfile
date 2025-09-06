@@ -5,8 +5,11 @@ pipeline {
   }
 
   parameters {
-    booleanParam(name: 'PRELOAD_TO_MINIKUBE', defaultValue: false,
-      description: 'If true, preload the built image into Minikube (no registry pull); otherwise pull from Docker Hub.')
+    booleanParam(
+      name: 'PRELOAD_TO_MINIKUBE',
+      defaultValue: false,
+      description: 'If true, preload the built image into Minikube (no registry pull); otherwise pull from Docker Hub.'
+    )
   }
 
   environment {
@@ -14,7 +17,7 @@ pipeline {
     CHART_DIR   = "helm/itaysass-flask"          // path to chart root
     CHART_VER   = "0.1.2"                        // chart version in Chart.yaml
     RELEASE     = "demo"                         // Helm release name
-    // CHARTMUSEUM_URL is discovered dynamically at runtime
+    // CHARTMUSEUM_URL: resolved dynamically from Minikube
   }
 
   stages {
@@ -41,7 +44,7 @@ pipeline {
         powershell '''
           $ErrorActionPreference = "Stop"
 
-          # Start if needed
+          # Start Minikube if needed
           $status = (minikube status --output json) 2>$null
           if (!$status -or ($status -notmatch '"Host":\\s*"Running"')) {
             Write-Host "Starting Minikube (docker driver)…"
@@ -81,6 +84,7 @@ pipeline {
 
             throw "Failed to resolve ChartMuseum URL via 'minikube service -n $ns $svc --url'"
           ''').trim()
+
           if (!url) { error 'ChartMuseum URL not found' }
           env.CHARTMUSEUM_URL = url
           echo "CHARTMUSEUM_URL=${env.CHARTMUSEUM_URL}"
@@ -104,7 +108,7 @@ pipeline {
               Write-Host "Docker logout (best-effort)…"
               docker logout *>$null
 
-              # Write password/token with NO trailing newline, then feed it to docker
+              # Write password/token with NO trailing newline, then feed it to docker (avoids newline/encoding quirks)
               $pwdFile = [System.IO.Path]::GetTempFileName()
               Set-Content -Path $pwdFile -Value $env:DH_PASS -NoNewline -Encoding ASCII
 
@@ -236,11 +240,11 @@ pipeline {
         Write-Host "`n=== Events (recent) ==="
         kubectl get events --sort-by=.lastTimestamp | Select-Object -Last 50 | Out-String | Write-Host
 
-        Write-Host "`n=== Describe Deployment (demo-flask assumed) ==="
-        kubectl describe deploy demo-flask 2>$null | Out-String | Write-Host
+        Write-Host "`n=== Describe Deployment ==="
+        kubectl describe deploy $env:RELEASE-flask 2>$null | Out-String | Write-Host
 
         Write-Host "`n=== Logs (deployment) ==="
-        kubectl logs deploy/demo-flask --all-containers --tail=200 2>$null | Out-String | Write-Host
+        kubectl logs deploy/$env:RELEASE-flask --all-containers --tail=200 2>$null | Out-String | Write-Host
       '''
     }
   }
