@@ -62,35 +62,59 @@ pipeline {
       }
     }
 
-    stage('Discover ChartMuseum URL') {
-      steps {
-        script {
-          def url = powershell(returnStdout: true, script: '''
-            $ErrorActionPreference = "Stop"
-            $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
-            $ns  = "chartmuseum"
-            $svc = "cm-chartmuseum"
+stage('Discover ChartMuseum URL') {
+  steps {
+    script {
+      def url = powershell(returnStdout: true, script: '''
+        $ErrorActionPreference = "Stop"
+        $env:KUBECONFIG = "$env:USERPROFILE\\.kube\\config"
+        $ns  = "chartmuseum"
+        $svc = "cm-chartmuseum"
 
-            for ($i=0; $i -lt 30; $i++) {
-              try {
-                $out = & minikube service -n $ns $svc --url 2>$null
-                if ($LASTEXITCODE -eq 0 -and $out) {
-                  $u = ($out -split "\\r?\\n" | Where-Object { $_ -match '^https?://' })[0]
-                  if ($u) { $u.Trim(); exit 0 }
-                }
-              } catch { }
-              Start-Sleep -Seconds 2
+        # Wait until Service exists and has ports
+        $deadline = (Get-Date).AddMinutes(2)
+        do {
+          try {
+            $json = kubectl get svc $svc -n $ns -o json 2>$null
+            if ($LASTEXITCODE -eq 0 -and $json) {
+              $svcObj = $json | ConvertFrom-Json
+              if ($svcObj.spec -and $svcObj.spec.ports -and $svcObj.spec.ports.Count -gt 0) { break }
             }
+          } catch { }
+          Start-Sleep -Seconds 2
+        } while ((Get-Date) -lt $deadline)
 
-            throw "Failed to resolve ChartMuseum URL via 'minikube service -n $ns $svc --url'"
-          ''').trim()
+        if (-not $svcObj) { throw "Service $ns/$svc not found." }
 
-          if (!url) { error 'ChartMuseum URL not found' }
-          env.CHARTMUSEUM_URL = url
-          echo "CHARTMUSEUM_URL=${env.CHARTMUSEUM_URL}"
+        $type = $svcObj.spec.type
+        $port = $svcObj.spec.ports[0].port
+        $nodePort = $svcObj.spec.ports[0].nodePort
+        $proto = ($svcObj.spec.ports[0].name -match 'https') ? 'https' : 'http'
+
+        if ($type -eq 'LoadBalancer' -and $svcObj.status.loadBalancer.ingress) {
+          # Prefer LoadBalancer if ready
+          $ing = $svcObj.status.loadBalancer.ingress[0]
+          $host = if ($ing.hostname) { $ing.hostname } else { $ing.ip }
+          if (-not $host) { throw "LoadBalancer ingress not ready yet." }
+          "$proto://$host:$port"
+          exit 0
         }
-      }
+
+        # Fallback to NodePort via Minikube node IP
+        if (-not $nodePort) { throw "Service type is $type but nodePort is missing. Ensure type=NodePort or expose accordingly." }
+
+        $mkIp = (minikube ip).Trim()
+        if (-not $mkIp) { throw "Could not obtain minikube IP." }
+
+        "$proto://$mkIp:$nodePort"
+      ''').trim()
+
+      if (!url) { error 'ChartMuseum URL not found' }
+      env.CHARTMUSEUM_URL = url
+      echo "CHARTMUSEUM_URL=${env.CHARTMUSEUM_URL}"
     }
+  }
+}
 
     stage('Docker login / build / push') {
       steps {
